@@ -57,13 +57,19 @@ const state=[{charge:0,wasOpen:false},{charge:0,wasOpen:false}];
 const TIPS=[8,12,16,20], KNUCKLES=[6,10,14,18];
 
 function isPalmOpen(lm){
- const wrist=lm[0]; let extended=0;
+ // More reliable on mobile: compare each fingertip to its MCP knuckle.
+ // An open palm normally has 3–4 clearly extended fingers.
+ const wrist=lm[0];
+ let extended=0;
+ const mcp=[5,9,13,17];
  for(let i=0;i<4;i++){
-   const tip=lm[TIPS[i]], knk=lm[KNUCKLES[i]];
-   if(Math.hypot(tip.x-wrist.x,tip.y-wrist.y) >
-      Math.hypot(knk.x-wrist.x,knk.y-wrist.y)*1.05) extended++;
+   const tip=lm[TIPS[i]], base=lm[mcp[i]], pip=lm[KNUCKLES[i]];
+   const dTip=Math.hypot(tip.x-wrist.x,tip.y-wrist.y);
+   const dBase=Math.hypot(base.x-wrist.x,base.y-wrist.y);
+   const dPip=Math.hypot(pip.x-wrist.x,pip.y-wrist.y);
+   if(dTip>dPip*1.08 && dTip>dBase*1.35) extended++;
  }
- return extended>=3;
+ return extended>=2;
 }
 
 function paintSkeleton(lm,c){
@@ -106,7 +112,7 @@ function onResults(res){
      paintSkeleton(lm,PALETTES[label]||PALETTES.Left);
 
      const open=isPalmOpen(lm), st=state[slot];
-     st.charge=Math.max(0,Math.min(1,st.charge+(open?.10:-.20)));
+     st.charge=Math.max(0,Math.min(1,st.charge+(open?.16:-.12)));
 
      if(open&&!st.wasOpen){
        const v=orbs[slot];
@@ -127,7 +133,9 @@ function onResults(res){
    if(state[i].charge>.01) orbs[i].style.opacity=state[i].charge.toFixed(3);
    else hideOrb(i);
  }
- status.textContent=seen.some(Boolean)?'✋ Hand detected':'Show your hand';
+ status.textContent=seen.some(Boolean)
+ ? (state.some(s=>s.charge>.05) ? '🔵 Rasengan charging!' : '✋ Hand detected — open your palm')
+ : 'Show your hand';
 }
 
 orbs.forEach(v=>{
