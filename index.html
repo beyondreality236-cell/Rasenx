@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<title>Rasengan • Hand Tracking</title>
+
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+
+<style>
+html,body{margin:0;width:100%;height:100%;background:#000;overflow:hidden;font-family:system-ui,sans-serif}
+.layer{position:fixed;inset:0;width:100vw;height:100vh;object-fit:cover}
+#cam{z-index:0;transform:scaleX(-1)}
+#skeleton{z-index:2;pointer-events:none;transform:scaleX(-1)}
+.vignette{position:fixed;inset:0;background:radial-gradient(ellipse at center,transparent 35%,rgba(0,0,0,.55) 100%);pointer-events:none;z-index:4}
+.rasengan{
+ position:fixed;left:0;top:0;width:280px;height:157.5px;
+ transform:translate(-50%,-50%);pointer-events:none;
+ mix-blend-mode:screen;opacity:0;z-index:10;
+ object-fit:contain;will-change:opacity,left,top,transform;
+ transition:opacity .08s linear;
+}
+#hint{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);
+ color:#cfe9ff;font-size:14px;letter-spacing:.04em;background:rgba(0,0,0,.5);
+ padding:7px 12px;border-radius:999px;z-index:20;pointer-events:none;white-space:nowrap}
+#status{position:fixed;top:12px;left:50%;transform:translateX(-50%);
+ color:#fff;font-size:12px;background:rgba(0,0,0,.5);padding:5px 9px;border-radius:8px;
+ z-index:20;pointer-events:none}
+</style>
+</head>
+<body>
+<video id="cam" class="layer" autoplay playsinline muted></video>
+<canvas id="skeleton" class="layer"></canvas>
+
+<video class="rasengan" data-slot="0" src="./assets/rasengan.mp4" muted autoplay loop playsinline preload="auto"></video>
+<video class="rasengan" data-slot="1" src="./assets/rasengan.mp4" muted autoplay loop playsinline preload="auto"></video>
+
+<div class="vignette"></div>
+<div id="status">Loading hand tracking…</div>
+<div id="hint">Show an open palm ✋ to charge a Rasengan</div>
+
+<script>
+const camVideo=document.getElementById('cam');
+const canvas=document.getElementById('skeleton');
+const pen=canvas.getContext('2d');
+const orbs=[...document.querySelectorAll('.rasengan')];
+const status=document.getElementById('status');
+
+const PALETTES={
+ Left:{bone:'#ff8a3d',joint:'#fff36a',glow:'#ff5e1a'},
+ Right:{bone:'#62f0ff',joint:'#ff66e0',glow:'#1aa6ff'}
+};
+const state=[{charge:0,wasOpen:false},{charge:0,wasOpen:false}];
+const TIPS=[8,12,16,20], KNUCKLES=[6,10,14,18];
+
+function isPalmOpen(lm){
+  // Mobile-friendly open-palm test. MediaPipe landmarks:
+  // 5/9/13/17 = MCP, 6/10/14/18 = PIP, 8/12/16/20 = fingertips.
+  // We count fingers whose tip is clearly farther from the wrist than its PIP.
+  const wrist=lm[0];
+  const pairs=[[8,6],[12,10],[16,14],[20,18]];
+  let extended=0;
+  for(const [tipIdx,pipIdx] of pairs){
+    const tip=lm[tipIdx], pip=lm[pipIdx];
+    const dTip=Math.hypot(tip.x-wrist.x,tip.y-wrist.y);
+    const dPip=Math.hypot(pip.x-wrist.x,pip.y-wrist.y);
+    if(dTip > dPip*1.12) extended++;
+  }
+  return extended>=2;
+}
+
+function paintSkeleton(lm,c){
+ pen.save(); pen.shadowBlur=18; pen.shadowColor=c.glow;
+ drawConnectors(pen,lm,HAND_CONNECTIONS,{color:c.bone,lineWidth:3});
+ pen.restore();
+ pen.save(); pen.shadowBlur=10; pen.shadowColor=c.glow; pen.fillStyle=c.joint;
+ for(const p of lm){pen.beginPath();pen.arc(p.x*canvas.width,p.y*canvas.height,3.5,0,Math.PI*2);pen.fill()}
+ pen.restore();
+}
+
+function placeOrb(slot,lm,charge){
+ const wrist=lm[0], palm=lm[9];
+ // Put the orb just above the palm, but clamp it so it cannot leave the screen.
+ const handSize=Math.hypot(palm.x-wrist.x,palm.y-wrist.y);
+ const cx=1-((wrist.x+palm.x)/2);
+ const cy=((wrist.y+palm.y)/2)-handSize*0.85;
+ const x=Math.max(0.10,Math.min(0.90,cx))*innerWidth;
+ const y=Math.max(0.14,Math.min(0.86,cy))*innerHeight;
+ const scale=0.75+0.25*charge;
+ const orb=orbs[slot];
+ orb.style.left=x+'px'; orb.style.top=y+'px';
+ orb.style.transform=`translate(-50%,-50%) scale(${scale})`;
+ orb.style.opacity=charge.toFixed(3);
+}
+
+function hideOrb(i){orbs[i].style.opacity='0';}
+
+function onResults(res){
+ canvas.width=camVideo.videoWidth||canvas.clientWidth;
+ canvas.height=camVideo.videoHeight||canvas.clientHeight;
+ pen.clearRect(0,0,canvas.width,canvas.height);
+
+ const seen=[false,false];
+ if(res.multiHandLandmarks&&res.multiHandedness){
+   res.multiHandLandmarks.forEach((lm,i)=>{
+     const label=res.multiHandedness[i].label;
+     const slot=label==='Right'?1:0;
+     seen[slot]=true;
+     paintSkeleton(lm,PALETTES[label]||PALETTES.Left);
+
+     const open=isPalmOpen(lm), st=state[slot];
+     st.charge=Math.max(0,Math.min(1,st.charge+(open?.28:-.18)));
+
+     if(open&&!st.wasOpen){
+       const v=orbs[slot];
+       v.currentTime=0;
+       const p=v.play();
+       if(p) p.catch(()=>{});
+     }
+     st.wasOpen=open;
+
+     if(st.charge>.01) placeOrb(slot,lm,st.charge);
+     else hideOrb(slot);
+   });
+ }
+ for(let i=0;i<2;i++){
+   if(seen[i])continue;
+   state[i].charge=Math.max(0,state[i].charge-.20);
+   state[i].wasOpen=false;
+   if(state[i].charge>.01) orbs[i].style.opacity=state[i].charge.toFixed(3);
+   else hideOrb(i);
+ }
+ status.textContent=seen.some(Boolean)
+ ? (state.some(s=>s.charge>.05) ? '🔵 Rasengan charging — OPEN PALM DETECTED!' : '✋ Hand detected — open your palm')
+ : 'Show your hand';
+}
+
+orbs.forEach(v=>{
+ v.addEventListener('error',()=>{status.textContent='Rasengan video failed to load';});
+ v.addEventListener('loadeddata',()=>{v.play().catch(()=>{});});
+});
+
+if(!window.Hands||!window.Camera){
+ status.textContent='MediaPipe failed to load';
+ throw new Error('MediaPipe scripts failed to load');
+}
+
+const hands=new Hands({locateFile:f=>`https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`});
+hands.setOptions({maxNumHands:2,modelComplexity:1,minDetectionConfidence:.65,minTrackingConfidence:.65});
+hands.onResults(onResults);
+
+const camera=new Camera(camVideo,{
+ onFrame:async()=>{await hands.send({image:camVideo})},
+ width:1280,height:720
+});
+camera.start().catch?.(e=>{status.textContent='Camera start failed';console.error(e)});
+
+camVideo.addEventListener('loadeddata',()=>{status.textContent='Show your hand';});
+</script>
+</body>
+</html>
